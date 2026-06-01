@@ -1,4 +1,10 @@
+from openai import OpenAI
+from app.core.config import OPENAI_MODEL
+
 class LLMService:
+    def __init__(self):
+        self._client = OpenAI()
+
     def generate_answer(
         self,
         question: str,
@@ -6,10 +12,12 @@ class LLMService:
     ) -> str:
         prompt = self._build_prompt(question, context)
 
-        return (
-            "This is a fake LLM answer.\n\n"
-            f"Prompt sent to LLM:\n\n{prompt}"
+        response = self._client.responses.create(
+            model=OPENAI_MODEL,
+            input=prompt,
         )
+
+        return response.output_text
 
     def _build_prompt(
         self,
@@ -30,5 +38,6 @@ Context:
 Question:
 {question}
 """
+
 
 llm_service = LLMService()
