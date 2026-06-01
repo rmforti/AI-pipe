@@ -3,26 +3,31 @@ from uuid import UUID
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app.core.config import MAX_UPLOAD_FILE_SIZE_BYTES, SUPPORTED_UPLOAD_EXTENSIONS
+
 from app.models.document import Document, DocumentCreate, DocumentSearchRequest, AskRequest
 from app.services.document_service import document_service
 from app.services.rag_service import rag_service
+from app.services.llm_service import LLMServiceError
+from app.services.embedding_service import EmbeddingServiceError
 
 router = APIRouter(prefix="/documents", tags=["documents"])
-
 
 class DocumentCreateRequest(BaseModel):
     title: str
     content: str
 
 
-@router.post("", response_model=Document)
-def create_document(request: DocumentCreateRequest) -> Document:
-    return document_service.create_document(
-        DocumentCreate(
-            title=request.title,
-            content=request.content,
-        )
-    )
+@router.post("")
+def create_document(request: DocumentCreateRequest):
+    try:
+        return document_service.create_document(title=request.title, content=request.content)
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except EmbeddingServiceError:
+        raise HTTPException(status_code=502, detail="Failed to generate embedding from OpenAI")
 
 
 @router.get("", response_model=list[Document])
@@ -37,33 +42,51 @@ def list_embeddings():
 
 @router.get("/chunks/{chunk_id}/embedding")
 def get_chunk_embedding(chunk_id: UUID):
-    embedding = document_service.get_embedding_for_chunk(chunk_id)
+    embedding = document_service.get_embedding(chunk_id)
 
     if embedding is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Embedding not found",
-        )
+        raise HTTPException(status_code=404, detail="Embedding not found")
 
     return embedding
 
 @router.post("/search")
-def search_documents(request: DocumentSearchRequest):
-    return document_service.search(request.query, request.top_k)
+def search(request: DocumentSearchRequest):
+    try:
+        return document_service.search(request.query, request.top_k)
+
+    except EmbeddingServiceError:
+        raise HTTPException(status_code=502, detail="Failed to generate embedding from OpenAI")
 
 @router.post("/ask")
-def ask_document(request: AskRequest):
-    return rag_service.ask(request.question, request.top_k)
+def ask(request: AskRequest):
+    try:
+        return rag_service.ask(request.question, request.top_k)
+
+    except LLMServiceError:
+        raise HTTPException(status_code=502, detail="Failed to generate response from OpenAI")
+
+MAX_FILE_SIZE_BYTES = 1_000_000
+@router.post("/upload")
+async def upload_document(file: UploadFile = File(...)):
+    if file.filename is None:
+        raise HTTPException(status_code=400, detail="Uploaded file must have a filename")
+
+    try:
+        raw_content = await file.read()
+        return document_service.create_document_from_upload(filename=file.filename, raw_content=raw_content)
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except EmbeddingServiceError:
+        raise HTTPException(status_code=502, detail="Failed to generate embedding from OpenAI")
 
 @router.get("/{document_id}/chunks")
 def get_document_chunks(document_id: UUID):
     chunks = document_service.get_chunks(document_id)
 
     if chunks is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
+        raise HTTPException(status_code=404, detail="Document not found")
 
     return chunks
 
@@ -77,25 +100,5 @@ def get_document(document_id: UUID) -> Document:
             status_code=404,
             detail="Document not found",
         )
-
-    return document
-
-@router.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
-    if file.content_type != "text/plain":
-        raise HTTPException(
-            status_code=400,
-            detail="Only text/plain files are supported for now",
-        )
-
-    raw_content = await file.read()
-    content = raw_content.decode("utf-8")
-
-    document = document_service.create_document(
-        DocumentCreate(
-            title=file.filename,
-            content=content,
-        )
-    )
 
     return document

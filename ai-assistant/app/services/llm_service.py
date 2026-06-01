@@ -1,23 +1,24 @@
 from openai import OpenAI
 from app.core.config import OPENAI_MODEL
 
+class LLMServiceError(Exception):
+    pass
+
 class LLMService:
     def __init__(self):
         self._client = OpenAI()
 
-    def generate_answer(
-        self,
-        question: str,
-        context: str,
-    ) -> str:
-        prompt = self._build_prompt(question, context)
+    def generate_answer(self, prompt: str) -> str:
+        try:
+            response = self._client.responses.create(
+                model=OPENAI_MODEL,
+                input=prompt,
+            )
 
-        response = self._client.responses.create(
-            model=OPENAI_MODEL,
-            input=prompt,
-        )
+            return response.output_text
 
-        return response.output_text
+        except Exception as error:
+            raise LLMServiceError("Failed to generate response from OpenAI") from error
 
     def _build_prompt(
         self,

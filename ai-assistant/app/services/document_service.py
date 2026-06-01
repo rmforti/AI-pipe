@@ -1,107 +1,107 @@
 from uuid import UUID, uuid4
-
 import math
 
-from app.models.document import Document, DocumentCreate
+from app.core.config import MAX_UPLOAD_FILE_SIZE_BYTES, SUPPORTED_UPLOAD_EXTENSIONS
 
+from app.models.document import Document
 from app.models.chunk import Chunk
+from app.models.embedding import Embedding
+
+from app.services.embedding_service import embedding_service
+from app.services.file_parsing_service import file_parsing_service
 from app.services.chunking_service import chunking_service
 
-from app.models.embedding import Embedding
-from app.services.embedding_service import embedding_service
+from app.repositories.document_repository import document_repository
+from app.repositories.chunk_repository import chunk_repository
+from app.repositories.embedding_repository import embedding_repository
 
-from pydantic import BaseModel
 
 class DocumentService:
     def __init__(self) -> None:
-        self._documents: dict[UUID, Document] = {}
-        self._chunks: dict[UUID, list[Chunk]] = {}
-        self._embeddings_by_chunk_id: dict[UUID, Embedding] = {}
         self._embedding_service = embedding_service
+        self._file_parsing_service = file_parsing_service
+        self._chunking_service = chunking_service
+        self._document_repository = document_repository
+        self._chunk_repository = chunk_repository
+        self._embedding_repository = embedding_repository
 
-    def create_document(self, document_create: DocumentCreate) -> Document:
-        document = Document(
-            id=uuid4(),
-            title=document_create.title,
-            content=document_create.content,
-        )
+    def create_document(self, title: str, content: str) -> Document:
+        if title.strip() == "":
+            raise ValueError("Document title cannot be empty")
 
-        self._documents[document.id] = document
+        if content.strip() == "":
+            raise ValueError("Document content cannot be empty")
 
-        chunks = chunking_service.chunk_text(
-            document_id=document.id,
-            text=document.content,
-        )
+        document = Document(id=uuid4(), title=title, content=content)
 
-        self._chunks[document.id] = chunks
+        self._document_repository.create_document(document)
+
+        chunks = self._chunking_service.chunk_text(document.id, document.content)
+        self._chunk_repository.create_chunks(chunks)
 
         for chunk in chunks:
-            embedding = embedding_service.generate_embedding(
-                chunk_id=chunk.id,
-                text=chunk.text,
-            )
-
-            self._embeddings_by_chunk_id[chunk.id] = embedding
+            embedding = self._embedding_service.generate_embedding(chunk_id=chunk.id, text=chunk.text)
+            self._embedding_repository.create_embedding(embedding)
 
         return document
 
+    def create_document_from_upload(self, filename: str, raw_content: bytes) -> Document:
+        if filename.strip() == "":
+            raise ValueError("Uploaded file must have a filename")
+
+        normalized_filename = filename.lower()
+
+        if not normalized_filename.endswith(SUPPORTED_UPLOAD_EXTENSIONS):
+            raise ValueError("Only .txt, .md, and .pdf files are supported")
+
+        if len(raw_content) > MAX_UPLOAD_FILE_SIZE_BYTES:
+            raise ValueError("File is too large. Maximum size is 1 MB")
+
+        content = self._file_parsing_service.parse_file(filename=filename, raw_content=raw_content)
+
+        return self.create_document(title=filename, content=content)
+
     def list_documents(self) -> list[Document]:
-        return list(self._documents.values())
+        return self._document_repository.list_documents()
 
     def get_document(self, document_id: UUID) -> Document | None:
-        return self._documents.get(document_id)
+        return self._document_repository.get_document(document_id)
 
     def get_chunks(self, document_id: UUID) -> list[Chunk] | None:
-        if document_id not in self._documents:
+        if self.get_document(document_id) is None:
             return None
 
-        return self._chunks.get(document_id, [])
+        return self._chunk_repository.get_chunks_by_document_id(document_id)
 
     def get_embedding_for_chunk(self, chunk_id: UUID) -> Embedding | None:
-        return self._embeddings_by_chunk_id.get(chunk_id)
-            
+        return self._embedding_repository.get_embedding_by_chunk_id(chunk_id)
+
     def list_embeddings(self) -> list[Embedding]:
-        return list(self._embeddings_by_chunk_id.values())
+        return self._embedding_repository.list_embeddings()
 
     def search(self, query: str, top_k: int = 3):
         query_embedding = self._embedding_service.embed_text(query)
 
+        chunks_with_embeddings = self._chunk_repository.list_chunks_with_embeddings()
+
         results = []
 
-        for document_chunks in self._chunks.values():
-            for chunk in document_chunks:
-                chunk_embedding = self._embeddings_by_chunk_id.get(chunk.id)
+        for chunk, chunk_embedding_vector in chunks_with_embeddings:
+            score = self._similarity_score(query_embedding, chunk_embedding_vector)
 
-                if chunk_embedding is None:
-                    continue
-
-                score = self._similarity_score(
-                    query_embedding.vector,
-                    chunk_embedding.vector,
-                )
-
-                results.append({
-                    "score": score,
-                    "chunk_id": chunk.id,
-                    "document_id": chunk.document_id,
-                    "chunk_index": chunk.chunk_index,
-                    "text": chunk.text,
-                    "embedding": chunk_embedding.vector,
-                })
+            results.append({
+                "score": score,
+                "chunk_id": chunk.id,
+                "document_id": chunk.document_id,
+                "chunk_index": chunk.chunk_index,
+                "text": chunk.text,
+            })
 
         results.sort(key=lambda item: item["score"], reverse=True)
 
-        return {
-            "query": query,
-            "query_embedding": query_embedding.vector,
-            "results": results[:top_k],
-        }
+        return {"query": query, "query_embedding": query_embedding, "results": results[:top_k]}
 
-    def _similarity_score(
-        self,
-        a: list[float],
-        b: list[float],
-    ) -> float:
+    def _similarity_score(self, a: list[float], b: list[float]) -> float:
         dot_product = sum(x * y for x, y in zip(a, b))
 
         magnitude_a = math.sqrt(sum(x * x for x in a))
@@ -111,5 +111,6 @@ class DocumentService:
             return 0.0
 
         return dot_product / (magnitude_a * magnitude_b)
+
 
 document_service = DocumentService()

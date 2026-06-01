@@ -5,10 +5,12 @@ from openai import OpenAI
 from app.core.config import OPENAI_EMBEDDING_MODEL
 from app.models.embedding import Embedding
 
+class EmbeddingServiceError(Exception):
+    pass
 
 class EmbeddingService:
     def __init__(self):
-        self._client = OpenAI()
+        self._openai_client = OpenAI()
 
     def generate_embedding(
         self,
@@ -24,18 +26,20 @@ class EmbeddingService:
             vector=vector,
         )
 
-    def embed_text(self, text: str) -> Embedding:
-        vector = self._embed(text)
+    def embed_text(self, text: str) -> list[float]:
+        try:
+            response = self._openai_client.embeddings.create(
+                model=OPENAI_EMBEDDING_MODEL,
+                input=text,
+            )
 
-        return Embedding(
-            id=uuid4(),
-            chunk_id=uuid4(),  # dummy ID for query embeddings
-            model=OPENAI_EMBEDDING_MODEL,
-            vector=vector,
-        )
+            return response.data[0].embedding
+
+        except Exception as error:
+            raise EmbeddingServiceError("Failed to generate embedding from OpenAI") from error
 
     def _embed(self, text: str) -> list[float]:
-        response = self._client.embeddings.create(
+        response = self._openai_client.embeddings.create(
             model=OPENAI_EMBEDDING_MODEL,
             input=text,
         )

@@ -16,10 +16,17 @@ class RAGService:
             chunk["text"] for chunk in chunks
         )
 
-        answer = self._llm_service.generate_answer(
-            question=question,
-            context=context,
-        )
+        prompt = f"""
+           Answer the user's question using only the context below.
+
+        Context:
+            {context}
+
+        Question:
+            {question}
+            """
+
+        answer = self._llm_service.generate_answer(prompt)
 
         return {
             "question": question,
